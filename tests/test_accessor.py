@@ -134,3 +134,45 @@ def test_invalid_arguments_raise():
         accessor.get_bars_before("000001.SZ", "20250102", lookback=0)
     with pytest.raises(ValueError, match="非法日期"):
         accessor.get_bars_before("000001.SZ", "2025-13-99")
+
+
+def test_same_slice_read_twice_is_identical():
+    """同一时间切片重复读取，两次结果必须完全相同。
+
+    每次调用都会新建 DuckDB 连接、重新解析 Parquet 文件列表，所以这不是
+    「读同一个内存对象」的假一致。将来若改动存储格式或查询逻辑导致行为不稳定，
+    这里会失败。
+    """
+    _save(_bars("20250101", close=10.0), _bars("20250102", close=11.0))
+
+    first = accessor.get_bars_before("000001.SZ", "20250102")
+    second = accessor.get_bars_before("000001.SZ", "20250102")
+
+    # 先确认不是空表，否则「两个空表相等」会给出无意义的通过
+    assert not first.empty
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_same_slice_read_twice_is_identical_when_truncated():
+    """重复读取一致性，但**必须让 LIMIT 真的截断**。
+
+    上一条用例覆盖不到非确定性：数据只有 2 行且全部返回时，即使 SQL 的排序完全
+    随机，Python 侧 ``sort_values`` 也会把顺序抹平，断言照样通过（已用
+    ``ORDER BY random()`` 变异验证过，确实抓不到）。
+
+    非确定性真正暴露的地方是**截断**：若 SQL 未按 trade_date 稳定排序，``LIMIT n``
+    每次可能挑中不同的 n 根，之后再排序也救不回来。所以这里造 5 天数据、只取 3 行。
+    """
+    days = ["20250102", "20250103", "20250106", "20250107", "20250108"]
+    _save(*(_bars(d, close=10.0 + i) for i, d in enumerate(days)))
+
+    first = accessor.get_bars_before("000001.SZ", "20250108", lookback=3)
+    second = accessor.get_bars_before("000001.SZ", "20250108", lookback=3)
+
+    assert len(first) == 3, "未发生截断，本用例会退化成上一条，抓不到非确定性"
+    assert [d.strftime("%Y%m%d") for d in first["trade_date"]] == [
+        "20250106",
+        "20250107",
+        "20250108",
+    ]
+    pd.testing.assert_frame_equal(first, second)

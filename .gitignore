@@ -1,0 +1,56 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Local data & artifacts (A 股行情、回测输出、数据库文件)
+*.parquet
+*.feather
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+data/
+!data/.gitkeep
+outputs/
+logs/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 工具本地状态（不随仓库分发）
+.workbuddy/

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-system"
+version = "0.1.0"
+description = "A 股个人量化分析与交易系统：回测 → 模拟盘 → 小资金实盘"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest",
+    "pandas",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

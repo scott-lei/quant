@@ -10,7 +10,12 @@ requires-python = ">=3.10"
 dependencies = [
     "pytest",
     "pandas",
+    "tushare>=1.4.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]

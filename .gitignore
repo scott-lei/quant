@@ -37,10 +37,10 @@ htmlcov/
 *.duckdb.wal
 *.db
 *.sqlite
-data/
-!data/.gitkeep
-outputs/
-logs/
+# 仅忽略项目根下的运行期目录；前面加 / 是为了不误伤 src/data 这类源码包
+/data/
+/outputs/
+/logs/
 *.log
 
 # Jupyter

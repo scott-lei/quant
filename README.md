@@ -12,10 +12,31 @@ python -m venv .venv
 source .venv/bin/activate
 
 python -m pip install --upgrade pip
-python -m pip install pytest pandas
+python -m pip install pytest pandas tushare
 ```
 
-依赖同时声明在 `pyproject.toml` 中；后续有了正式包目录后，可改为 `pip install -e .` 安装。
+现在已有正式包目录 `src/`，推荐直接用可编辑安装（同时装齐全部依赖）：
+
+```bash
+python -m pip install -e .
+```
+
+## 配置 Tushare Token
+
+token 只从环境变量 `TUSHARE_TOKEN` 读取，不写进任何入库文件。
+
+```bash
+cp .env.example .env      # Windows: copy .env.example .env
+```
+
+然后把 `https://tushare.pro/user/token` 拿到的 token 填进 `.env` 的 `TUSHARE_TOKEN=` 后面。`.env` 已被 `.gitignore` 忽略，不会进 Git。
+
+```python
+from data.tushare_client import pro_api
+
+pro = pro_api()                       # 缺 token 会抛 MissingTokenError
+df = pro.daily(ts_code="600519.SH", start_date="20260101")
+```
 
 ## 运行测试
 

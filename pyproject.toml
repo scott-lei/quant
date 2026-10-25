@@ -11,6 +11,7 @@ dependencies = [
     "pytest",
     "pandas",
     "tushare>=1.4.0",
+    "pyarrow>=14.0",  # pandas 的 parquet 引擎，to_parquet/read_parquet 必需
 ]
 
 [tool.setuptools.packages.find]

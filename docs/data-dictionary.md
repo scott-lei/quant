@@ -247,7 +247,41 @@ def test_as_of_no_lookahead(query_bars):
 
 ---
 
-## 6. 附：最小校验清单
+## 6. 分区布局与 DuckDB 读取口径
+
+落盘布局（日线）：
+
+```
+data/raw/daily/trade_date=YYYYMMDD/data.parquet
+```
+
+`trade_date` 同时存在于**目录名**和**文件列**中，两者语义相同但类型不同：目录名是字符串，文件列是 `datetime64[ns]`。DuckDB 读取时必须注意：
+
+- **禁用 `hive_partitioning=true`**。该选项会把目录名解析成**分区列并覆盖同名文件列**，`20250102` 被推断成 `BIGINT`（`typeof(trade_date)` 实测为 `BIGINT`，而非文件里的 `TIMESTAMP`）。后果分两种情况，都很隐蔽：
+
+  | 写法 | 结果 |
+  | --- | --- |
+  | 单个文件路径 + `= DATE '2025-01-02'` | 正常返回，无报错 |
+  | 通配符跨多个分区 + `= DATE '2025-01-02'` | `ConversionException: Unimplemented type for cast (BIGINT -> DATE)` |
+  | 通配符跨多个分区 + `= 20250102` | **静默跑通**，但返回的是整数语义的列 |
+
+  也就是说：单分区开发时一切正常，等数据铺到多天、写法又恰好是整数比较，错误不会以异常形式出现，而是让 `trade_date` 变成 `BIGINT`，后续与其它表的 `timestamp` 列 join 时类型不匹配或全部落空。
+
+- **推荐做法**：在 Python 侧按目录名筛出区间内的文件列表，再交给 DuckDB：
+
+  ```python
+  files = [str(p) for p in ROOT.glob("trade_date=*/data.parquet")
+           if start <= p.parent.name.split("=")[1] <= end]
+  con.sql(f"SELECT * FROM read_parquet({files!r}, hive_partitioning=false)")
+  ```
+
+  实测（3 个分区、16111 行）：显式文件列表只读 2 个文件 32.7 kB；用 `trade_date=*` 通配则打开全部 3 个文件、读 49.2 kB。`hive_partitioning=false` 仍会依据 Parquet 行组统计做 **row group 剪枝**（单日查询只扫 1/3 个行组），所以关掉 hive 不会失去剪枝能力。
+
+- 读取口径一旦写错，可能**不报错而静默读错**。因此该路径必须配测试：`count(*)` 与 `load_daily()` 行数相等，且 `typeof(trade_date)` 以 `TIMESTAMP` 开头（已由 `tests/test_storage.py` 覆盖）。
+
+---
+
+## 7. 附：最小校验清单
 
 数据入库与策略上线前，逐条核对：
 
@@ -257,3 +291,4 @@ def test_as_of_no_lookahead(query_bars):
 4. 停牌日无正常 bar，或占位行 `is_suspended = true` 且价格为 `null`。
 5. `query_bars(..., end=T)` 返回值满足 `(bars["available_at"] <= T).all()`（自动测试覆盖）。
 6. 全部时间戳按 `Asia/Shanghai` 解释，无 UTC 混入。
+7. DuckDB 查询未使用 `hive_partitioning=true`，`trade_date` 类型为 `timestamp`（见 §6）。

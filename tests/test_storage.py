@@ -177,3 +177,61 @@ def test_load_daily_canonical_flag_on_empty_range():
     got = storage.load_daily("20250601", "20250630", canonical=True)
     assert got.empty
     assert list(got.columns) == list(storage.CANONICAL_COLUMNS)
+
+
+# ---------------------------------------------------------------------------
+# DuckDB 读取口径（见 docs/data-dictionary.md §6）
+# ---------------------------------------------------------------------------
+
+
+def test_duckdb_reads_explicit_files_with_timestamp_type():
+    """显式文件列表 + hive_partitioning=false：trade_date 保持 timestamp，行数与 load_daily 一致。
+
+    若误用 hive_partitioning=true，目录名会被解析成 BIGINT 并覆盖文件列，
+    这里刻意断言 dtype 与行数，防止那种「不报错但语义变了」的静默错误。
+    """
+    duckdb = pytest.importorskip("duckdb")
+
+    for d in ("20250102", "20250103"):
+        storage.save_daily(_make_df(d), d)
+
+    files = sorted(str(p) for p in storage.DAILY_ROOT.glob("trade_date=*/data.parquet"))
+    assert len(files) == 2
+
+    con = duckdb.connect()
+    rows, dtype = con.execute(
+        f"SELECT count(*), typeof(any_value(trade_date)) "
+        f"FROM read_parquet({files!r}, hive_partitioning=false)"
+    ).fetchone()
+
+    assert rows == len(storage.load_daily("20250102", "20250103"))
+    assert dtype.lower().startswith("timestamp"), f"trade_date 类型异常：{dtype}"
+
+
+def test_hive_partitioning_true_breaks_date_semantics():
+    """记录 hive_partitioning=true 的坑：分区列被推断为整数，DATE 比较直接报错。"""
+    duckdb = pytest.importorskip("duckdb")
+
+    # 必须造出「多个分区 + 通配符」的真实场景：只给单个文件路径时 DuckDB 不会报错，
+    # 坑会一直潜伏到数据跨了多天之后才爆出来。
+    for d in ("20250102", "20250103"):
+        storage.save_daily(_make_df(d), d)
+    pattern = str(storage.DAILY_ROOT / "trade_date=*" / "data.parquet")
+
+    con = duckdb.connect()
+    dtype = con.execute(
+        f"SELECT typeof(any_value(trade_date)) FROM read_parquet('{pattern}', hive_partitioning=true)"
+    ).fetchone()[0]
+    assert dtype == "BIGINT"
+
+    with pytest.raises(duckdb.ConversionException):
+        con.execute(
+            f"SELECT count(*) FROM read_parquet('{pattern}', hive_partitioning=true) "
+            f"WHERE trade_date = DATE '2025-01-02'"
+        ).fetchall()
+
+    # 更阴险的一点：换成整数比较就不报错，静默跑通——所以只靠「跑不报错」发现不了这个坑
+    assert con.execute(
+        f"SELECT count(*) FROM read_parquet('{pattern}', hive_partitioning=true) "
+        f"WHERE trade_date = 20250102"
+    ).fetchone()[0] == 2

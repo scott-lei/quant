@@ -44,6 +44,21 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
 
 _PRICE_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close", "vol", "amount")
 
+CANONICAL_COLUMNS: tuple[str, ...] = (
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",   # 股（规范层）
+    "amount",   # 元（规范层）
+)
+"""规范层列名与顺序。与原始层唯一的差异：``vol``（手）→ ``volume``（股）。"""
+
+# 原始层 → 规范层的换算系数，集中在此处，别处不得重复实现
+_UNIT_FACTORS: dict[str, float] = {"vol": 100.0, "amount": 1000.0}  # 手→股、千元→元
+
 
 def _to_yyyymmdd(value: str | date | datetime | pd.Timestamp) -> str:
     """把多种日期表示归一成 ``YYYYMMDD`` 字符串（分区键格式）。"""
@@ -107,10 +122,20 @@ def save_daily(df: pd.DataFrame, trade_date: str | date | datetime) -> Path | No
     return path
 
 
-def load_daily(start_date: str | date | datetime, end_date: str | date | datetime) -> pd.DataFrame:
+def load_daily(
+    start_date: str | date | datetime,
+    end_date: str | date | datetime,
+    *,
+    canonical: bool = False,
+) -> pd.DataFrame:
     """读取 ``[start_date, end_date]`` 闭区间内的日线数据。
 
     只读取落在区间内的分区目录，不会扫描全库；缺失的交易日自然跳过（休市日没有分区）。
+
+    Args:
+        start_date / end_date: 闭区间，``YYYYMMDD`` 或 ``YYYY-MM-DD``。
+        canonical: 为 ``True`` 时顺带调用 :func:`to_canonical`，直接返回规范层
+            （``volume`` 股、``amount`` 元）。默认 ``False``，返回原始层。
 
     Returns:
         按 ``trade_date``、``ts_code`` 升序排列的 DataFrame。区间内无数据时返回
@@ -140,8 +165,51 @@ def load_daily(start_date: str | date | datetime, end_date: str | date | datetim
         empty = pd.DataFrame({c: pd.Series(dtype="float64") for c in _PRICE_COLUMNS})
         empty.insert(0, "trade_date", pd.Series(dtype="datetime64[ns]"))
         empty.insert(0, "ts_code", pd.Series(dtype="string"))
-        return empty
+        return to_canonical(empty) if canonical else empty
 
     df = pd.concat(frames, ignore_index=True)
     df = df.drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
-    return df.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+    df = df.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+    return to_canonical(df) if canonical else df
+
+
+def to_canonical(df: pd.DataFrame) -> pd.DataFrame:
+    """原始层 → 规范层：``vol``（手）转 ``volume``（股）、``amount``（千元）转元。
+
+    这是全系统**唯一**允许做单位换算的地方。转换规则见 ``docs/data-dictionary.md`` §1.4：
+
+    - ``volume = vol × 100``（1 手 = 100 股）
+    - ``amount = amount × 1000``（千元 → 元）
+
+    转换后列名由 ``vol`` 变为 ``volume``，使「拿错层」立刻以 ``KeyError`` 暴露，
+    而不是静默算出 100 倍偏差。
+
+    Args:
+        df: 含 ``vol`` / ``amount`` 的原始层 DataFrame（``load_daily`` 的默认输出）。
+
+    Returns:
+        新的 DataFrame（不修改入参），列顺序按 :data:`CANONICAL_COLUMNS`。
+
+    Raises:
+        KeyError: 缺少 ``vol`` 或 ``amount``（多半是已经转换过，或拿错了数据源）。
+        TypeError: 上述列不是数值类型。
+    """
+    already = "volume" in df.columns and "vol" not in df.columns
+    if already:
+        raise KeyError("传入的列已是 volume（规范层），请勿重复调用 to_canonical()")
+
+    missing = [c for c in ("vol", "amount") if c not in df.columns]
+    if missing:
+        raise KeyError(f"缺少原始层列：{missing}；当前列：{list(df.columns)}")
+
+    out = df.copy()
+    for col, factor in _UNIT_FACTORS.items():
+        if not pd.api.types.is_numeric_dtype(out[col]):
+            raise TypeError(f"列 {col} 不是数值类型：{out[col].dtype}")
+    out["volume"] = out["vol"].astype("float64") * _UNIT_FACTORS["vol"]
+    out["amount"] = out["amount"].astype("float64") * _UNIT_FACTORS["amount"]
+    out = out.drop(columns=["vol"])
+
+    ordered = [c for c in CANONICAL_COLUMNS if c in out.columns]
+    ordered += [c for c in out.columns if c not in CANONICAL_COLUMNS]
+    return out.loc[:, ordered]

@@ -117,3 +117,63 @@ def test_load_missing_range_returns_empty_with_schema():
 def test_load_reversed_range_raises():
     with pytest.raises(ValueError, match="晚于"):
         storage.load_daily("20250110", "20250102")
+
+
+# --- 两套单位：原始层 → 规范层 ------------------------------------------------
+
+
+def test_to_canonical_converts_units_and_renames():
+    """vol(手)→volume(股)×100；amount(千元)→元×1000；vol 列消失。"""
+    raw = _make_df("20250102").loc[:, list(storage.REQUIRED_COLUMNS)]
+
+    canon = storage.to_canonical(raw)
+
+    assert list(canon.columns) == list(storage.CANONICAL_COLUMNS)
+    assert "vol" not in canon.columns
+    row = canon.set_index("ts_code").loc["600519.SH"]
+    assert row["volume"] == pytest.approx(50028.7 * 100)      # 手 → 股
+    assert row["amount"] == pytest.approx(7490883.7 * 1000)   # 千元 → 元
+
+
+def test_to_canonical_satisfies_amount_over_volume_check():
+    """文档 §1.4 的自检口径：amount(元) ÷ volume(股) ≈ 均价，应与 close 同量级。"""
+    canon = storage.to_canonical(_make_df("20250102"))
+    row = canon.set_index("ts_code").loc["600519.SH"]
+    vwap = row["amount"] / row["volume"]
+    assert 900 < vwap < 1800  # 与 close=1488 同量级，量级错了会差 100 倍
+
+
+def test_to_canonical_does_not_mutate_input():
+    raw = _make_df("20250102")
+    before = raw.copy()
+    storage.to_canonical(raw)
+    pd.testing.assert_frame_equal(raw, before)
+
+
+def test_to_canonical_rejects_already_canonical():
+    canon = storage.to_canonical(_make_df("20250102"))
+    with pytest.raises(KeyError, match="重复调用"):
+        storage.to_canonical(canon)
+
+
+def test_to_canonical_rejects_missing_columns():
+    raw = _make_df("20250102").drop(columns=["vol"])
+    with pytest.raises(KeyError, match="vol"):
+        storage.to_canonical(raw)
+
+
+def test_load_daily_canonical_flag():
+    storage.save_daily(_make_df("20250102"), "20250102")
+    raw = storage.load_daily("20250102", "20250102")
+    canon = storage.load_daily("20250102", "20250102", canonical=True)
+
+    assert "vol" in raw.columns and "volume" not in raw.columns
+    assert "volume" in canon.columns and "vol" not in canon.columns
+    assert canon.set_index("ts_code").loc["000001.SZ", "volume"] == pytest.approx(123456.7 * 100)
+
+
+def test_load_daily_canonical_flag_on_empty_range():
+    """空区间 + canonical=True 也必须返回规范层列名，不能退回原始层。"""
+    got = storage.load_daily("20250601", "20250630", canonical=True)
+    assert got.empty
+    assert list(got.columns) == list(storage.CANONICAL_COLUMNS)
